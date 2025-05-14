@@ -42,7 +42,7 @@ This GitHub Action invalidates one or more paths in an AWS CloudFront distributi
 <a id="usage"></a>
 ## 📦 Usage
 
-### Example – Invalidate all objects in a CloudFront distribution:
+### Example – Invalidate all objects in a CloudFront distribution
 
 ```yaml
 jobs:
@@ -56,11 +56,11 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-role
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/cloudfront-distribution-role
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Invalidate CloudFront
-        uses: devopspolis/invalidate-cloudfront@main
+      - name: Invalidate CloudFront Distribution
+        uses: devopspolis/invalidate-aws-cloudfront-distribution@main
         with:
           distribution-id: E123EXAMPLE456
           paths: '/*'
