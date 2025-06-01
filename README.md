@@ -3,20 +3,33 @@
   <span style="font-size: 2.2em;">Invalidate AWS CloudFront Distribution</span>
 </div>
 
+![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-Invalidate%20AWS%20CloudFront%20Distribution-blue?logo=github)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+
 <p>
-
-This GitHub Action invalidates one or more paths in an AWS CloudFront distribution. It can be used to refresh cached content when you update files in an associated S3 bucket or other origin.
-
+This GitHub Action invalidates one or more paths in an AWS CloudFront distribution. It can be used to refresh cached content after updating filesobjects in an associated S3 bucket or other origin.
 </p>
+
+See more [GitHub Actions by DevOpspolis](https://github.com/marketplace?query=devopspolis&type=actions)
 
 ---
 
 ## 📚 Table of Contents
 
+- [✨ Features](#features)
 - [📥 Inputs](#inputs)
 - [📤 Outputs](#outputs)
 - [📦 Usage](#usage)
 - [🚦 Requirements](#requirements)
+- [🧑‍⚖️ Legal](#legal)
+
+<!-- trunk-ignore(markdownlint/MD033) -->
+<a id="features"></a>
+## ✨ Features
+- Simple to use
+- Full or partial invalidation via path
+- Designed to work with [devopspolis/deploy-to-aws-s3](devopspolis/deploy-to-aws-s3) and [devopspolis/deploy-artifact-to-aws-s3](https://github.com/marketplace/actions/deploy-artifact-to-aws-s3) actions
 
 ---
 <!-- trunk-ignore(markdownlint/MD033) -->
@@ -27,6 +40,7 @@ This GitHub Action invalidates one or more paths in an AWS CloudFront distributi
 | ------------------ | --------------------------------------------- | -------- | ------- |
 | `distribution-id`  | The CloudFront Distribution ID                | true     | —       |
 | `paths`            | Paths to invalidate (e.g., `/*`, `/index.js`) | false    | `/*`    |
+| `role`             | IAM role ARN or name to assume for deployment | false    | —       |
 
 ---
 <!-- trunk-ignore(markdownlint/MD033) -->
@@ -92,3 +106,9 @@ jobs:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/invalidate-cloudfront-distribution-role
           aws-region: ${{ vars.AWS_REGION }}
 ```
+
+---
+<!-- trunk-ignore(markdownlint/MD033) -->
+<a id="legal"></a>
+## 🧑‍⚖️ Legal
+The MIT License (MIT)
