@@ -41,6 +41,7 @@ See more [GitHub Actions by DevOpspolis](https://github.com/marketplace?query=de
 | `distribution-id`  | The CloudFront Distribution ID                | true     | —       |
 | `paths`            | Paths to invalidate (e.g., `/*`, `/index.js`) | false    | `/*`    |
 | `role`             | IAM role ARN or name to assume for deployment | false    | —       |
+| `aws-region`       | AWS Region. Required if specifying role       | false    | —       |
 
 ---
 <!-- trunk-ignore(markdownlint/MD033) -->
