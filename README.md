@@ -97,7 +97,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
 
     steps:
       - name: Invalidate CloudFront Distribution
@@ -119,7 +118,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
 
     steps:
       - name: Invalidate specific paths
@@ -176,7 +174,6 @@ The calling workflow must have the following permissions when using role assumpt
 ```yaml
 permissions:
   id-token: write  # Required for OIDC
-  contents: read   # Required for checkout
 ```
 
 ### 2. AWS IAM Permissions
