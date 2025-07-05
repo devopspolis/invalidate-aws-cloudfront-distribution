@@ -29,7 +29,6 @@ See more [GitHub Actions by DevOpspolis](https://github.com/marketplace?query=de
 ## ✨ Features
 - ✅ Simple to use with comprehensive validation
 - ✅ Full or partial invalidation via path patterns
-- ✅ Automatic jq installation if not available
 - ✅ Smart AWS region detection
 - ✅ Support for both full ARNs and short role names
 - ✅ Optional wait for completion
@@ -151,6 +150,9 @@ jobs:
           bucket-name: my-website-bucket
           source-directory: dist/
           role: deployment-role
+        env:
+          AWS_REGION: us-east-1
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 
       - name: Invalidate CloudFront
         uses: devopspolis/invalidate-aws-cloudfront-distribution@v1

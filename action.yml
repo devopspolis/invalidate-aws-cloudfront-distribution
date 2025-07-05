@@ -80,17 +80,17 @@ runs:
       shell: bash
       run: |
         echo "🔍 Verifying required tools..."
-        
+
         if ! command -v jq &> /dev/null; then
           echo "❌ jq is not available. This should not happen on GitHub runners."
           exit 1
         fi
-        
+
         if ! command -v aws &> /dev/null; then
           echo "❌ AWS CLI is not available. Please ensure AWS CLI is installed."
           exit 1
         fi
-        
+
         echo "✅ All required tools are available"
         echo "   jq version: $(jq --version)"
         echo "   AWS CLI version: $(aws --version)"
