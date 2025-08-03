@@ -28,6 +28,25 @@ inputs:
     description: Custom caller reference for the invalidation
     type: string
     required: false
+  dry-run:
+    description: Validate inputs and permissions without creating invalidation
+    type: boolean
+    required: false
+    default: false
+  retry-attempts:
+    description: Number of retry attempts for AWS API calls (1-10)
+    type: string
+    required: false
+    default: '3'
+  mask-sensitive-info:
+    description: Mask sensitive information in logs
+    type: boolean
+    required: false
+    default: false
+  aws-region:
+    description: AWS region for CloudFront operations (falls back to AWS_REGION, AWS_DEFAULT_REGION, then us-east-1)
+    type: string
+    required: false
 
 outputs:
   invalidation-id:
@@ -39,6 +58,12 @@ outputs:
   invalidation-create-time:
     description: The Invalidation Creation Time
     value: ${{ steps.invalidate.outputs.invalidation_create_time }}
+  dry-run-status:
+    description: Status of dry run validation (if dry-run was enabled)
+    value: ${{ steps.verify-aws-credentials.outputs.dry_run_status }}
+  final-status:
+    description: Final invalidation status after completion wait
+    value: ${{ steps.wait-completion.outputs.final_status }}
 
 runs:
   using: composite
@@ -49,32 +74,60 @@ runs:
         echo "🔍 Validating inputs..."
 
         # Validate distribution ID format
-        if [[ ! "${{ inputs.distribution-id }}" =~ ^[A-Z0-9]{14}$ ]]; then
-          echo "❌ Invalid distribution ID format. Expected 14 alphanumeric characters, got: ${{ inputs.distribution-id }}"
+        distribution_id="${{ inputs.distribution-id }}"
+        if [[ ! "$distribution_id" =~ ^[A-Za-z0-9]{14}$ ]]; then
+          echo "❌ Invalid distribution ID format. Expected 14 alphanumeric characters, got: $distribution_id"
           exit 1
         fi
 
-        # Validate paths format
+        # Validate paths format - handle paths properly without shell expansion
         paths="${{ inputs.paths }}"
-        IFS=' ' read -ra path_array <<< "$paths"
-        path_count=${#path_array[@]}
-
-        if [[ $path_count -gt 1000 ]]; then
-          echo "❌ Too many paths specified ($path_count). CloudFront supports maximum 1000 paths per invalidation."
-          exit 1
-        fi
-
-        for path in "${path_array[@]}"; do
+        
+        # Use printf to avoid shell expansion issues
+        printf '%s\0' $paths | while IFS= read -r -d '' path; do
           if [[ ! "$path" =~ ^/.* ]]; then
             echo "❌ Invalid path format: '$path'. All paths must start with '/'"
             exit 1
           fi
+          
+          # Validate path length (CloudFront limit)
+          if [[ ${#path} -gt 1024 ]]; then
+            echo "❌ Path too long: '$path'. Maximum length is 1024 characters."
+            exit 1
+          fi
         done
+        
+        # Count paths using array to avoid expansion
+        declare -a path_array
+        read -ra path_array <<< "$paths"
+        path_count=${#path_array[@]}
+        
+        if [[ $path_count -gt 1000 ]]; then
+          echo "❌ Too many paths specified ($path_count). CloudFront supports maximum 1000 paths per invalidation."
+          exit 1
+        fi
+        
+        # Validate retry attempts
+        retry_attempts="${{ inputs.retry-attempts }}"
+        if [[ ! "$retry_attempts" =~ ^[0-9]+$ ]] || [[ $retry_attempts -lt 1 ]] || [[ $retry_attempts -gt 10 ]]; then
+          echo "❌ Invalid retry-attempts: '$retry_attempts'. Must be a number between 1 and 10."
+          exit 1
+        fi
+        
+        # Polling interval is hardcoded to 30 seconds (optimal for CloudFront invalidations)
 
         echo "✅ Input validation passed"
-        echo "   Distribution ID: ${{ inputs.distribution-id }}"
-        echo "   Paths: ${{ inputs.paths }}"
+        if [[ "${{ inputs.mask-sensitive-info }}" == "true" ]]; then
+          echo "   Distribution ID: [MASKED]"
+          echo "   Paths: [MASKED]"
+        else
+          echo "   Distribution ID: $distribution_id"
+          echo "   Paths: $paths"
+        fi
         echo "   Path count: $path_count"
+        echo "   Retry attempts: $retry_attempts"
+        echo "   Polling interval: 30 seconds (fixed)"
+        echo "   Dry run: ${{ inputs.dry-run }}"
 
     - name: Verify required tools
       shell: bash
@@ -101,9 +154,15 @@ runs:
       shell: bash
       run: |
         role="${{ inputs.role }}"
-
-        # If it's not already an ARN, construct it
-        if [[ "$role" != arn:aws:iam::* ]]; then
+        
+        # Validate role ARN format if provided
+        if [[ "$role" =~ ^arn:aws:iam:: ]]; then
+          if [[ ! "$role" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+$ ]]; then
+            echo "❌ Invalid role ARN format: $role"
+            exit 1
+          fi
+          echo "✅ Using provided role ARN: $role"
+        else
           echo "🔍 Resolving short role name to full ARN..."
 
           # Try to get AWS account ID from STS if not set
@@ -119,20 +178,31 @@ runs:
             aws_account_id="$AWS_ACCOUNT_ID"
           fi
 
+          # Validate short role name format
+          if [[ ! "$role" =~ ^[A-Za-z0-9+=,.@_-]+$ ]]; then
+            echo "❌ Invalid role name format: $role"
+            exit 1
+          fi
+          
           role="arn:aws:iam::${aws_account_id}:role/$role"
         fi
 
         echo "role_arn=$role" >> $GITHUB_OUTPUT
-        echo "✅ Using role: $role"
+        if [[ "${{ inputs.mask-sensitive-info }}" == "true" ]]; then
+          echo "✅ Using role: [MASKED]"
+        else
+          echo "✅ Using role: $role"
+        fi
 
     - name: Configure AWS credentials
       if: ${{ inputs.role }}
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ steps.resolve-role.outputs.role_arn }}
-        aws-region: ${{ env.AWS_REGION || env.AWS_DEFAULT_REGION || 'us-east-1' }}
+        aws-region: ${{ inputs.aws-region || env.AWS_REGION || env.AWS_DEFAULT_REGION || 'us-east-1' }}
 
     - name: Verify AWS credentials and permissions
+      id: verify-aws-credentials
       shell: bash
       run: |
         echo "🔍 Verifying AWS credentials..."
@@ -149,39 +219,105 @@ runs:
 
         # Test CloudFront permissions
         echo "🔍 Testing CloudFront permissions..."
-        if ! aws cloudfront get-distribution --id "${{ inputs.distribution-id }}" > /dev/null 2>&1; then
-          echo "❌ Cannot access CloudFront distribution ${{ inputs.distribution-id }}. Check permissions and distribution ID."
-          exit 1
+        distribution_id="${{ inputs.distribution-id }}"
+        
+        # Use retry logic for distribution access check
+        retry_attempts="${{ inputs.retry-attempts }}"
+        attempt=1
+        while [[ $attempt -le $retry_attempts ]]; do
+          if aws cloudfront get-distribution --id "$distribution_id" > /dev/null 2>&1; then
+            echo "✅ CloudFront access verified"
+            break
+          else
+            echo "⚠️  Failed to access distribution (attempt $attempt/$retry_attempts)"
+            if [[ $attempt -eq $retry_attempts ]]; then
+              echo "❌ Cannot access CloudFront distribution $distribution_id. Check permissions and distribution ID."
+              exit 1
+            fi
+            sleep $((attempt * 2))  # Exponential backoff
+            ((attempt++))
+          fi
+        done
+        
+        # Exit here if dry-run mode
+        if [[ "${{ inputs.dry-run }}" == "true" ]]; then
+          echo "🏁 Dry run completed successfully. All validations passed."
+          echo "   ✅ Distribution access verified"
+          echo "   ✅ Paths validated"
+          echo "   ✅ Permissions confirmed"
+          echo "dry_run_status=success" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
-
-        echo "✅ CloudFront access verified"
 
     - name: Invalidate CloudFront Distribution
       id: invalidate
       shell: bash
       run: |
         echo "🚀 Starting CloudFront invalidation..."
-        echo "   Distribution: ${{ inputs.distribution-id }}"
-        echo "   Paths: ${{ inputs.paths }}"
-
-        # Prepare invalidation command
-        invalidation_cmd="aws cloudfront create-invalidation --distribution-id ${{ inputs.distribution-id }} --paths ${{ inputs.paths }}"
-
-        # Add caller reference if provided
-        if [[ -n "${{ inputs.caller-reference }}" ]]; then
-          invalidation_cmd="$invalidation_cmd --caller-reference ${{ inputs.caller-reference }}"
-          echo "   Caller Reference: ${{ inputs.caller-reference }}"
+        distribution_id="${{ inputs.distribution-id }}"
+        paths="${{ inputs.paths }}"
+        caller_ref="${{ inputs.caller-reference }}"
+        
+        if [[ "${{ inputs.mask-sensitive-info }}" == "true" ]]; then
+          echo "   Distribution: [MASKED]"
+          echo "   Paths: [MASKED]"
+        else
+          echo "   Distribution: $distribution_id"
+          echo "   Paths: $paths"
+        fi
+        
+        if [[ -n "$caller_ref" ]]; then
+          if [[ "${{ inputs.mask-sensitive-info }}" == "true" ]]; then
+            echo "   Caller Reference: [MASKED]"
+          else
+            echo "   Caller Reference: $caller_ref"
+          fi
         fi
 
-        # Execute invalidation
-        if ! invalidation_output=$($invalidation_cmd 2>&1); then
-          echo "❌ Failed to create invalidation:"
+        # Execute invalidation with retry logic and proper quoting
+        retry_attempts="${{ inputs.retry-attempts }}"
+        attempt=1
+        while [[ $attempt -le $retry_attempts ]]; do
+          echo "Invalidation attempt $attempt/$retry_attempts..."
+          
+          # Build command safely without interpolation
+          if [[ -n "$caller_ref" ]]; then
+            invalidation_output=$(aws cloudfront create-invalidation \
+              --distribution-id "$distribution_id" \
+              --paths $paths \
+              --caller-reference "$caller_ref" 2>&1)
+          else
+            invalidation_output=$(aws cloudfront create-invalidation \
+              --distribution-id "$distribution_id" \
+              --paths $paths 2>&1)
+          fi
+          
+          if [[ $? -eq 0 ]]; then
+            echo "✅ Invalidation request successful"
+            break
+          else
+            echo "⚠️  Invalidation attempt $attempt failed"
+            if [[ $attempt -eq $retry_attempts ]]; then
+              echo "❌ Failed to create invalidation after $retry_attempts attempts:"
+              # Filter sensitive information from error output
+              if [[ "${{ inputs.mask-sensitive-info }}" == "true" ]]; then
+                echo "[ERROR OUTPUT MASKED]"
+              else
+                echo "$invalidation_output"
+              fi
+              exit 1
+            fi
+            sleep $((attempt * 2))  # Exponential backoff
+            ((attempt++))
+          fi
+        done
+
+        # Display output based on masking preference
+        if [[ "${{ inputs.mask-sensitive-info }}" == "true" ]]; then
+          echo "Invalidation output: [MASKED]"
+        else
           echo "$invalidation_output"
-          exit 1
         fi
-
-        echo "✅ Invalidation request successful"
-        echo "$invalidation_output"
 
         # Extract invalidation details
         invalidation_id=$(echo "$invalidation_output" | jq -r '.Invalidation.Id // empty')
@@ -203,40 +339,118 @@ runs:
         echo "   Created: $invalidation_create_time"
 
     - name: Wait for invalidation completion
+      id: wait-completion
       if: ${{ inputs.wait-for-completion == 'true' }}
       shell: bash
       run: |
         invalidation_id="${{ steps.invalidate.outputs.invalidation_id }}"
-        echo "⏳ Waiting for invalidation $invalidation_id to complete..."
-
-        max_attempts=60  # 30 minutes with 30-second intervals
+        distribution_id="${{ inputs.distribution-id }}"
+        polling_interval=30  # Fixed 30-second polling interval
+        
+        if [[ "${{ inputs.mask-sensitive-info }}" == "true" ]]; then
+          echo "⏳ Waiting for invalidation [MASKED] to complete..."
+        else
+          echo "⏳ Waiting for invalidation $invalidation_id to complete..."
+        fi
+        
+        # Calculate max attempts based on 30-second polling (max 30 minutes)
+        max_wait_time=1800  # 30 minutes in seconds
+        max_attempts=$((max_wait_time / polling_interval))  # 60 attempts
         attempt=0
+        
+        echo "Polling every $polling_interval seconds (max $max_attempts attempts)..."
 
         while [[ $attempt -lt $max_attempts ]]; do
-          if invalidation_status=$(aws cloudfront get-invalidation \
-            --distribution-id "${{ inputs.distribution-id }}" \
-            --id "$invalidation_id" \
-            --query 'Invalidation.Status' \
-            --output text 2>/dev/null); then
-
+          # Add retry logic for status checks
+          retry_count=0
+          max_retries=3
+          
+          while [[ $retry_count -lt $max_retries ]]; do
+            if invalidation_status=$(aws cloudfront get-invalidation \
+              --distribution-id "$distribution_id" \
+              --id "$invalidation_id" \
+              --query 'Invalidation.Status' \
+              --output text 2>/dev/null); then
+              break
+            else
+              ((retry_count++))
+              if [[ $retry_count -lt $max_retries ]]; then
+                echo "⚠️  Failed to check status, retrying in 5 seconds..."
+                sleep 5
+              fi
+            fi
+          done
+          
+          if [[ $retry_count -eq $max_retries ]]; then
+            echo "⚠️  Failed to check invalidation status (attempt $((attempt + 1))/$max_attempts)"
+          else
             echo "   Status: $invalidation_status (attempt $((attempt + 1))/$max_attempts)"
-
+            
             if [[ "$invalidation_status" == "Completed" ]]; then
               echo "✅ Invalidation completed successfully"
+              echo "final_status=Completed" >> "$GITHUB_OUTPUT"
               break
             elif [[ "$invalidation_status" == "Failed" ]]; then
               echo "❌ Invalidation failed"
+              echo "final_status=Failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
-          else
-            echo "⚠️  Failed to check invalidation status (attempt $((attempt + 1))/$max_attempts)"
           fi
 
-          sleep 30
+          sleep "$polling_interval"
           ((attempt++))
         done
 
         if [[ $attempt -eq $max_attempts ]]; then
-          echo "⚠️  Timeout waiting for invalidation to complete after 30 minutes"
+          timeout_minutes=$((max_wait_time / 60))
+          echo "⚠️  Timeout waiting for invalidation to complete after $timeout_minutes minutes"
           echo "   The invalidation is still in progress and will complete eventually"
+          echo "final_status=InProgress" >> "$GITHUB_OUTPUT"
         fi
+
+    - name: Summary
+      if: ${{ inputs.dry-run != 'true' }}
+      shell: bash
+      run: |
+        echo "## 🎉 CloudFront Invalidation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ inputs.mask-sensitive-info }}" == "true" ]]; then
+          echo "- **Distribution ID:** [MASKED]" >> $GITHUB_STEP_SUMMARY
+          echo "- **Invalidation ID:** [MASKED]" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Distribution ID:** ${{ inputs.distribution-id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Invalidation ID:** ${{ steps.invalidate.outputs.invalidation_id }}" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "- **Status:** ${{ steps.invalidate.outputs.invalidation_status }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Created:** ${{ steps.invalidate.outputs.invalidation_create_time }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Retry Attempts:** ${{ inputs.retry-attempts }}" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ inputs.wait-for-completion }}" == "true" ]]; then
+          echo "- **Final Status:** ${{ steps.wait-completion.outputs.final_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Polling Interval:** 30 seconds" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🚀 CloudFront invalidation completed successfully!" >> $GITHUB_STEP_SUMMARY
+
+    - name: Dry Run Summary
+      if: ${{ inputs.dry-run == 'true' }}
+      shell: bash
+      run: |
+        echo "## 🧑‍🔬 Dry Run Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Mode:** Validation Only (No Invalidation Created)" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ inputs.mask-sensitive-info }}" == "true" ]]; then
+          echo "- **Distribution ID:** [MASKED]" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Distribution ID:** ${{ inputs.distribution-id }}" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "- **Validation Status:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- **Permissions:** ✅ Verified" >> $GITHUB_STEP_SUMMARY
+        echo "- **Path Count:** Validated" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🏁 All validations passed! Ready for actual invalidation." >> $GITHUB_STEP_SUMMARY

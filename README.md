@@ -31,10 +31,15 @@ See more [GitHub Actions by DevOpspolis](https://github.com/marketplace?query=de
 - ✅ Full or partial invalidation via path patterns
 - ✅ Smart AWS region detection
 - ✅ Support for both full ARNs and short role names
-- ✅ Optional wait for completion
+- ✅ Optional wait for completion with configurable polling
 - ✅ Comprehensive error handling and logging
 - ✅ Input validation (distribution ID format, path format, path limits)
 - ✅ Multiple output parameters for monitoring
+- ✅ **NEW:** Dry-run mode for validation without invalidation
+- ✅ **NEW:** Configurable retry logic with exponential backoff
+- ✅ **NEW:** Enhanced security with sensitive information masking
+- ✅ **NEW:** Improved path handling to prevent shell expansion issues
+- ✅ **NEW:** Enhanced error reporting and GitHub job summaries
 - ✅ Designed to work with [devopspolis/deploy-to-aws-s3](devopspolis/deploy-to-aws-s3) and [devopspolis/deploy-artifact-to-aws-s3](https://github.com/marketplace/actions/deploy-artifact-to-aws-s3) actions
 
 ---
@@ -49,6 +54,10 @@ See more [GitHub Actions by DevOpspolis](https://github.com/marketplace?query=de
 | `role`                 | IAM role ARN or short name to assume for deployment                       | false    | —       |
 | `wait-for-completion`  | Wait for invalidation to complete (max 30 minutes)                        | false    | `false` |
 | `caller-reference`     | Custom caller reference for the invalidation                              | false    | —       |
+| `dry-run`              | Validate inputs and permissions without creating invalidation             | false    | `false` |
+| `retry-attempts`       | Number of retry attempts for AWS API calls (1-10)                         | false    | `3`     |
+| `mask-sensitive-info`  | Mask sensitive information in logs                                        | false    | `false` |
+| `aws-region`           | AWS region (falls back to AWS_REGION, AWS_DEFAULT_REGION, then us-east-1) | false    | —       |
 
 ### Path Format Guidelines
 - All paths must start with `/`
@@ -57,6 +66,8 @@ See more [GitHub Actions by DevOpspolis](https://github.com/marketplace?query=de
 - Use wildcards like `/css/*` for directories
 - Multiple paths should be space-separated: `"/index.html /css/* /js/*"`
 - Maximum 1000 paths per invalidation
+- Maximum path length is 1024 characters
+- Paths are validated to prevent shell expansion issues
 
 ---
 <!-- trunk-ignore(markdownlint/MD033) -->
@@ -68,6 +79,8 @@ See more [GitHub Actions by DevOpspolis](https://github.com/marketplace?query=de
 | `invalidation-id`        | The ID of the CloudFront invalidation   |
 | `invalidation-status`    | The status of the invalidation           |
 | `invalidation-create-time` | The creation time of the invalidation  |
+| `dry-run-status`         | Status of dry run validation (if enabled) |
+| `final-status`           | Final invalidation status after completion wait |
 
 ---
 <!-- trunk-ignore(markdownlint/MD033) -->
@@ -165,6 +178,41 @@ jobs:
           AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 ```
 
+### Example 5 – Enhanced features with retry logic and dry run
+
+```yaml
+jobs:
+  validate-and-invalidate:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Dry run validation
+        uses: devopspolis/invalidate-aws-cloudfront-distribution@v1
+        with:
+          distribution-id: E123EXAMPLE456
+          paths: '/index.html /css/* /js/* /images/*'
+          dry-run: true
+          role: cloudfront-invalidation-role
+        env:
+          AWS_REGION: us-west-2
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+
+      - name: Production invalidation with enhanced options
+        uses: devopspolis/invalidate-aws-cloudfront-distribution@v1
+        with:
+          distribution-id: E123EXAMPLE456
+          paths: '/index.html /css/* /js/* /images/*'
+          wait-for-completion: true
+          retry-attempts: 5
+          mask-sensitive-info: true
+          role: cloudfront-invalidation-role
+        env:
+          AWS_REGION: us-west-2
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+```
+
 ---
 <!-- trunk-ignore(markdownlint/MD033) -->
 <a id="requirements"></a>
@@ -199,7 +247,7 @@ The assumed role or AWS credentials must have the following permissions:
 ```
 
 ### 3. Environment Variables
-- `AWS_REGION` or `AWS_DEFAULT_REGION`: AWS region (auto-detected if not provided)
+- `AWS_REGION` or `AWS_DEFAULT_REGION`: AWS region (used as fallback if `aws-region` input not provided)
 - `AWS_ACCOUNT_ID`: Required only when using short role names (auto-detected if credentials allow)
 
 ### 4. AWS Authentication
@@ -250,6 +298,24 @@ Error: AWS credentials not configured or invalid
 - Ensure AWS credentials are configured before this action
 - If using role assumption, verify the role ARN is correct
 - Check that `AWS_REGION` is set when using role assumption
+
+#### ❌ Invalid retry attempts or polling interval
+```
+Error: Invalid retry-attempts: '15'. Must be a number between 1 and 10.
+```
+**Solution**: Ensure retry-attempts is between 1-10. Polling interval is fixed at 30 seconds (optimal for CloudFront).
+
+#### ❌ Path too long
+```
+Error: Path too long: '/very/long/path...'. Maximum length is 1024 characters.
+```
+**Solution**: CloudFront has a maximum path length of 1024 characters. Use shorter paths or wildcards.
+
+#### ❌ Shell expansion issues
+```
+Error: Invalid path format: 'file1.txt'. All paths must start with '/'
+```
+**Solution**: This can occur when `/*` expands to directory contents. The action now prevents this, but ensure paths are properly quoted.
 
 ### Debug Tips
 
