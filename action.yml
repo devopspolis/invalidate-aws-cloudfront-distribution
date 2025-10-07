@@ -75,8 +75,8 @@ runs:
 
         # Validate distribution ID format
         distribution_id="${{ inputs.distribution-id }}"
-        if [[ ! "$distribution_id" =~ ^[A-Za-z0-9]{14}$ ]]; then
-          echo "❌ Invalid distribution ID format. Expected 14 alphanumeric characters, got: $distribution_id"
+        if [[ ! "$distribution_id" =~ ^[A-Za-z0-9]{13,}$ ]]; then
+          echo "❌ Invalid distribution ID format. Expected 13+ alphanumeric characters, got: $distribution_id"
           exit 1
         fi
 
