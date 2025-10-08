@@ -284,12 +284,12 @@ runs:
           if [[ -n "$caller_ref" ]]; then
             invalidation_output=$(aws cloudfront create-invalidation \
               --distribution-id "$distribution_id" \
-              --paths $paths \
+              --paths "$paths" \
               --caller-reference "$caller_ref" 2>&1)
           else
             invalidation_output=$(aws cloudfront create-invalidation \
               --distribution-id "$distribution_id" \
-              --paths $paths 2>&1)
+              --paths "$paths" 2>&1)
           fi
           
           if [[ $? -eq 0 ]]; then
